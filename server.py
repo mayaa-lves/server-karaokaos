@@ -17,16 +17,16 @@ async def connect(sid, environ):
 @sio.event
 async def disconnect(sid):
     print(f"Desconectado: {sid}")
-    salas_para_remover = []
-    for pin, sala in list(salas.items()):
+    remover = []
+    for pin, sala in salas.items():
         if sala["host"] == sid:
-            salas_para_remover.append(pin)
+            remover.append(pin)
             continue
-        jogadores_antes = len(sala["jogadores"])
+        antes = len(sala["jogadores"])
         sala["jogadores"] = [j for j in sala["jogadores"] if j["sid"] != sid]
-        if len(sala["jogadores"]) != jogadores_antes:
+        if len(sala["jogadores"]) != antes:
             await sio.emit("jogadores_atualizados", {"jogadores": sala["jogadores"]}, to=sala["host"])
-    for pin in salas_para_remover:
+    for pin in remover:
         del salas[pin]
 
 def gerar_pin():
@@ -52,14 +52,16 @@ async def entrar_sala(sid, dados):
         return {"sucesso": False, "erro": "Sala não encontrada."}
     if not nome:
         return {"sucesso": False, "erro": "Digite seu nome."}
+
     sala = salas[pin]
-    jogador_existente = next((j for j in sala["jogadores"] if j["sid"] == sid), None)
-    if jogador_existente:
-        return {"sucesso": True, "jogador": jogador_existente["numero"]}
+    existente = next((j for j in sala["jogadores"] if j["sid"] == sid), None)
+    if existente:
+        return {"sucesso": True, "jogador": existente["numero"]}
     if len(sala["jogadores"]) >= 2:
         return {"sucesso": False, "erro": "A sala já está cheia."}
-    numeros_usados = {j["numero"] for j in sala["jogadores"]}
-    numero = 1 if 1 not in numeros_usados else 2
+
+    usados = {j["numero"] for j in sala["jogadores"]}
+    numero = 1 if 1 not in usados else 2
     jogador = {"sid": sid, "nome": nome, "numero": numero}
     sala["jogadores"].append(jogador)
     await sio.enter_room(sid, pin)
@@ -70,13 +72,18 @@ async def entrar_sala(sid, dados):
 @sio.event
 async def iniciar_partida(sid, dados):
     pin = str(dados.get("pin", "")).strip()
-    if pin not in salas:
-        return
-    sala = salas[pin]
-    if sala["host"] != sid:
+    if pin not in salas or salas[pin]["host"] != sid:
         return
     print(f"Partida iniciada na sala {pin}")
-    await sio.emit("iniciar_partida", {"pin": pin}, room=pin)
+    await sio.emit("partida_iniciada", {}, room=pin)
+
+@sio.event
+async def finalizar_partida(sid, dados):
+    pin = str(dados.get("pin", "")).strip()
+    if pin not in salas or salas[pin]["host"] != sid:
+        return
+    print(f"Partida finalizada na sala {pin}")
+    await sio.emit("partida_finalizada", {}, room=pin)
 
 @sio.event
 async def dados_microfone(sid, dados):
@@ -84,24 +91,35 @@ async def dados_microfone(sid, dados):
     if pin not in salas:
         return
     sala = salas[pin]
-    jogador = next((item for item in sala["jogadores"] if item["sid"] == sid), None)
+    jogador = next((j for j in sala["jogadores"] if j["sid"] == sid), None)
     if jogador is None:
         return
+
     try:
         volume = float(dados.get("volume", 0))
     except (TypeError, ValueError):
         volume = 0.0
     volume = max(0.0, min(volume, 1.0))
-    frequencia_bruta = dados.get("frequencia")
+
     frequencia = None
-    if frequencia_bruta is not None:
+    bruto = dados.get("frequencia")
+    if bruto is not None:
         try:
-            frequencia_convertida = float(frequencia_bruta)
-            if 80 <= frequencia_convertida <= 1000:
-                frequencia = frequencia_convertida
+            f = float(bruto)
+            if 80 <= f <= 1000:
+                frequencia = f
         except (TypeError, ValueError):
-            frequencia = None
-    payload = {"jogador": jogador["numero"], "nome": jogador["nome"], "volume": volume, "frequencia": frequencia}
-    await sio.emit("dados_microfone", payload, to=sala["host"])
+            pass
+
+    await sio.emit(
+        "dados_microfone",
+        {
+            "jogador": jogador["numero"],
+            "nome": jogador["nome"],
+            "volume": volume,
+            "frequencia": frequencia,
+        },
+        to=sala["host"],
+    )
 
 app = socketio.ASGIApp(sio, other_asgi_app=fastapi_app)
